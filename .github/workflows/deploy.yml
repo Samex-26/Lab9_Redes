@@ -1,0 +1,59 @@
+name: deploy
+
+# TODO 1: el pipeline corre con cada push a main
+on:
+  push:
+    branches: [main]
+
+# Solo un despliegue a la vez
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false
+
+# Permisos del token automatico: leer el codigo y publicar la imagen
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # TODO 2: iniciar sesion en el registry (GitHub Container Registry)
+      - name: Login en ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # TODO 3: construir la imagen con el tag del commit
+      - name: Construir imagen
+        run: |
+          TAG="${GITHUB_SHA::7}"
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}:$TAG"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          docker build --build-arg APP_VERSION="$TAG" -t "$IMAGE" app/
+
+      # TODO 4: arrancar el contenedor y correr el smoke test
+      - name: Smoke test
+        run: |
+          docker run -d --name api -p 8080:8000 "$IMAGE"
+          for intento in $(seq 1 30); do
+            respuesta=$(curl -fsS --max-time 2 http://localhost:8080/ || true)
+            if [ "$respuesta" = "PagosYA api $TAG" ]; then
+              echo "OK: $respuesta"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Smoke test fallido con $TAG"
+          docker logs api
+          exit 1
+
+      # TODO 5: publicar solo si el smoke paso
+      - name: Publicar imagen
+        run: docker push "$IMAGE"
